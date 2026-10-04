@@ -1,0 +1,44 @@
+name: Update Zee playlist
+
+on:
+  schedule:
+    # GitHub Actions cron is calendar-based (UTC) and cannot express a true
+    # 5h30m interval. This six-hour cadence is a practical approximation.
+    # Scheduled runs can be delayed by GitHub and are not exact to the second.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install requirements
+        run: pip install -r requirements.txt
+
+      - name: Run Zee playlist updater
+        env:
+          SOURCE_M3U_URL: ${{ vars.SOURCE_M3U_URL || secrets.SOURCE_M3U_URL }}
+        run: python scripts/update_zee.py
+
+      - name: Commit and push zee.m3u when it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add zee.m3u
+          if git diff --staged --quiet; then
+            echo "No playlist changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update Zee playlist"
+          git push
