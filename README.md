@@ -92,11 +92,12 @@ A 6-hour cron (`0 */6 * * *`) is too close to expiry: a delayed workflow can pub
 
 Matching inspects `tvg-name`, the `#EXTINF` display name, `group-title`, and `tvg-id` (case-insensitive). It does **not** search the stream URL.
 
-A channel is kept when its identity starts with the Zee brand (including compact forms such as `ZeeTV` / `zeetv`) or matches an alias in `ZEE_FAMILY_ALIASES`.
+A channel is kept when its identity starts with the Zee brand (including compact forms such as `ZeeTV` / `zeetv`), matches `ZEE_FAMILY_ALIASES` (for example `Zing`), or is a Zee Entertainment `&` / `And` brand such as `&TV`, `&Pictures`, `&flix`, `&prive`, and `&xplor`.
 
 To add or tighten rules later, edit `scripts/update_zee.py`:
 
 - `ZEE_FAMILY_ALIASES` — extra names such as `zing` that do not start with `Zee`.
+- `AND_FAMILY_PREFIXES` — `&TV` / `And Pictures` and similar Zee network brands.
 - `FALSE_POSITIVE_PATTERNS` — phrases to exclude.
 - `is_zee_channel()` — main decision function.
 

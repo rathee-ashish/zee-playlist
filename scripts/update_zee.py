@@ -48,12 +48,28 @@ SENSITIVE_QUERY_KEYS = {
 # Names that begin with these tokens after optional quality prefixes are Zee.
 ZEE_BRAND_PREFIX = "zee"
 
-# Exact display / tvg-name / group-title aliases that are Zee family but may
-# not start with "Zee". Extend this set when adding known rebrands.
+# Exact first-token aliases that are Zee family but may not start with "Zee".
 ZEE_FAMILY_ALIASES = {
     "zing",
     "zee5",
 }
+
+# "&TV" / "And Pictures" and related Zee Entertainment brands.
+AND_FAMILY_PREFIXES = (
+    "and tv",
+    "and pictures",
+    "and flix",
+    "and prive",
+    "and xplor",
+)
+
+AND_ID_PREFIXES = (
+    "andtv",
+    "andpictures",
+    "andflix",
+    "andprive",
+    "andxplor",
+)
 
 # Extra substrings that must appear as a standalone brand token, not as part
 # of an unrelated sentence such as "Amazing Zee Movie".
@@ -186,7 +202,11 @@ def looks_like_m3u(text: str, status_code: int) -> None:
 
 
 def normalize_name(value: str) -> str:
-    lowered = QUALITY_PREFIX.sub("", value.strip().lower())
+    """Lowercase a channel name and treat '&Brand' as 'and brand'."""
+    lowered = value.strip().lower().replace("&amp;", "&")
+    lowered = QUALITY_PREFIX.sub("", lowered)
+    if lowered.startswith("&"):
+        lowered = "and " + lowered[1:].lstrip()
     return NON_ALNUM.sub(" ", lowered).strip()
 
 
@@ -198,8 +218,19 @@ def is_false_positive(value: str) -> bool:
     return any(pattern.search(value) for pattern in FALSE_POSITIVE_PATTERNS)
 
 
+def is_and_family_name(value: str) -> bool:
+    """True for &TV, &Pictures, And TV HD, and similar Zee network brands."""
+    normalized = normalize_name(value)
+    return any(
+        normalized == prefix or normalized.startswith(prefix + " ")
+        for prefix in AND_FAMILY_PREFIXES
+    )
+
+
 def starts_with_zee_brand(value: str) -> bool:
     """True when the channel identity begins with the Zee brand token."""
+    if is_and_family_name(value):
+        return True
     tokens = identity_tokens(value)
     if not tokens:
         return False
@@ -213,13 +244,15 @@ def starts_with_zee_brand(value: str) -> bool:
 
 
 def tvg_id_is_zee(tvg_id: str) -> bool:
-    """Match ids like zeetv, zee_tv, or 0-9-zeetv — not URLs."""
+    """Match ids like zeetv, zee_tv, 0-9-zeetv, andtv, or andpictures."""
     cleaned = tvg_id.strip().lower()
     if not cleaned:
         return False
     cleaned = re.sub(r"^(\d+[-_.])+", "", cleaned)
     compact = NON_ALNUM.sub("", cleaned)
-    return compact.startswith(ZEE_BRAND_PREFIX)
+    if compact.startswith(ZEE_BRAND_PREFIX):
+        return True
+    return any(compact.startswith(prefix) for prefix in AND_ID_PREFIXES)
 
 
 def is_zee_channel(entry: PlaylistEntry) -> bool:
