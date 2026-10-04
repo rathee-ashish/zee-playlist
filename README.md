@@ -92,6 +92,8 @@ A 6-hour cron (`0 */6 * * *`) is too close to expiry: a delayed workflow can pub
 
 Matching inspects `tvg-name`, the `#EXTINF` display name, `group-title`, and `tvg-id` (case-insensitive). It does **not** search the stream URL.
 
+Source names such as `&Pictures HD` and `&TV HD` are kept. In the written `zee.m3u` they are shown as `And Pictures HD` and `And TV HD` because many IPTV players treat `&` as a special character and hide those channels. Stream URLs are not rewritten.
+
 A channel is kept when its identity starts with the Zee brand (including compact forms such as `ZeeTV` / `zeetv`), matches `ZEE_FAMILY_ALIASES` (for example `Zing`), or is a Zee Entertainment `&` / `And` brand such as `&TV`, `&Pictures`, `&flix`, `&prive`, and `&xplor`.
 
 To add or tighten rules later, edit `scripts/update_zee.py`:

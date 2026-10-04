@@ -104,7 +104,8 @@ class PlaylistEntry:
     display_name: str = ""
 
     def render(self) -> list[str]:
-        return [self.extinf, *self.body_lines]
+        # Rewrite leading "&" in the title only. Many players drop "&Pictures HD".
+        return [player_safe_extinf(self.extinf), *self.body_lines]
 
 
 def redact_url(url: str) -> str:
@@ -216,6 +217,32 @@ def identity_tokens(value: str) -> list[str]:
 
 def is_false_positive(value: str) -> bool:
     return any(pattern.search(value) for pattern in FALSE_POSITIVE_PATTERNS)
+
+
+def player_safe_ampersand_name(value: str) -> str:
+    """Turn '&Pictures HD' into 'And Pictures HD' for player-visible titles."""
+    stripped = value.strip().replace("&amp;", "&")
+    if stripped.startswith("&"):
+        rest = stripped[1:].lstrip()
+        if rest:
+            return "And " + rest
+    return value
+
+
+def player_safe_extinf(extinf: str) -> str:
+    """Keep stream URLs unchanged; make '&' brand titles readable in players."""
+    prefix, sep, display = extinf.rpartition(",")
+    if not sep:
+        return extinf
+
+    def replace_attr(match: re.Match[str]) -> str:
+        key = match.group(1)
+        val = match.group(2)
+        if key.lower() == "tvg-name":
+            val = player_safe_ampersand_name(val)
+        return f'{key}="{val}"'
+
+    return ATTR_RE.sub(replace_attr, prefix) + "," + player_safe_ampersand_name(display)
 
 
 def is_and_family_name(value: str) -> bool:
