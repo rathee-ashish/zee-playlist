@@ -2,10 +2,11 @@ name: Update Zee playlist
 
 on:
   schedule:
-    # GitHub Actions cron is calendar-based (UTC) and cannot express a true
-    # 5h30m interval. This six-hour cadence is a practical approximation.
-    # Scheduled runs can be delayed by GitHub and are not exact to the second.
-    - cron: "0 */6 * * *"
+    # Source stream URLs typically last about 6 hours. GitHub cron cannot
+    # express a true 5h30m interval, and scheduled jobs can be delayed.
+    # Refresh every 4 hours so a new playlist is committed with a buffer
+    # before those URLs expire. This does not regenerate tokens.
+    - cron: "0 */4 * * *"
   workflow_dispatch:
 
 permissions:

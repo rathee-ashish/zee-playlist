@@ -46,7 +46,7 @@ Configure the source URL in the GitHub UI:
 3. If the URL is not sensitive, add a **Variables** entry named `SOURCE_M3U_URL`.
 4. If the URL embeds credentials, add a **Secret** named `SOURCE_M3U_URL` instead.
 
-The workflow reads `vars.SOURCE_M3U_URL` first, then `secrets.SOURCE_M3U_URL`.
+The workflow reads `vars.SOURCE_M3U_URL` first, then `secrets.SOURCE_M3U_URL`. This repository is configured to refetch from that URL every 4 hours and rewrite `zee.m3u`.
 
 Required permission: `contents: write` (already set in the workflow so the job can commit `zee.m3u`).
 
@@ -71,7 +71,8 @@ The file is only useful if the upstream source is authorized and the provider pe
 - The workflow periodically fetches the upstream playlist (see schedule below).
 - `zee.m3u` is replaced only after HTTP, M3U, Zee-match, and per-entry validation succeed.
 - GitHub Actions schedules are **not** guaranteed to run at the exact second; jobs can be delayed.
-- A typical six-hour stream authorization window and this repository’s refresh cadence are **separate** concepts. This project does not refresh or regenerate tokens.
+- Upstream stream URLs often expire after about 6 hours. This repo does **not** extend or regenerate those URLs. It downloads a fresh playlist from `SOURCE_M3U_URL` on a schedule so `zee.m3u` is replaced before the previous copy goes stale.
+- GitHub Actions schedules are **not** guaranteed to run at the exact second; jobs can be delayed.
 
 ### Schedule limitation
 
@@ -80,12 +81,12 @@ GitHub Actions cron is UTC and calendar-based. It **cannot** represent a true re
 This workflow uses:
 
 ```yaml
-cron: "0 */6 * * *"
+cron: "0 */4 * * *"
 ```
 
-That is four times per day (00:00, 06:00, 12:00, 18:00 UTC), a practical approximation of a 5h30m refresh with a safety buffer before a 6-hour authorization window. Do not treat execution time as exact.
+That is every 4 hours (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC). Against a typical 6-hour source URL lifetime, that leaves about a 2-hour buffer, including some slack if GitHub starts the job late.
 
-The alternative `30 0,6,12,18 * * *` would also run four times per day at fixed clock times; it still is not a sliding 5h30m timer.
+A 6-hour cron (`0 */6 * * *`) is too close to expiry: a delayed workflow can publish after the links are already dead. Do not treat execution time as exact.
 
 ## Zee filtering rules
 
