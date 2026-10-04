@@ -12,17 +12,24 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
+from playlist_order import canonical_group, skip_channel, sort_key
+
 HTTP_TIMEOUT_SECONDS = 30
 MAX_RETRIES = 3
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 OUTPUT_FILENAME = "zee.m3u"
+COMBINED_FILENAME = "all-channels.m3u"
+SOURCE_ID = "zee"
+# Replace this URL (or set SOURCE_M3U_URL) when the upstream playlist moves.
+DEFAULT_SOURCE_M3U_URL = "https://premiumplugx.top/jiostb/mjelo.php?view=raw"
+SOURCE_MARKER_PREFIX = "#PLAYLIST-SOURCE:"
 USER_AGENT = "zee-playlist-updater/1.0 (+https://github.com)"
 
 # Query keys that must never appear in logs.
@@ -354,6 +361,146 @@ def render_playlist(entries: list[PlaylistEntry]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def source_marker(source_id: str) -> str:
+    return f"{SOURCE_MARKER_PREFIX}{source_id}"
+
+
+def is_source_entry(entry: PlaylistEntry, source_id: str) -> bool:
+    marker = source_marker(source_id)
+    if marker in entry.body_lines:
+        return True
+    return f'source="{source_id}"' in entry.extinf.lower()
+
+
+def strip_source_entries(
+    entries: Iterable[PlaylistEntry], source_id: str
+) -> list[PlaylistEntry]:
+    return [entry for entry in entries if not is_source_entry(entry, source_id)]
+
+
+def _set_group_title(extinf: str, group_title: str) -> str:
+    prefix, sep, display = extinf.rpartition(",")
+    if not sep:
+        return extinf
+    if 'group-title="' in prefix:
+        prefix = re.sub(
+            r'group-title="[^"]*"',
+            f'group-title="{group_title}"',
+            prefix,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return prefix + "," + display
+    return prefix + f' group-title="{group_title}",' + display
+
+
+def tag_source_entry(
+    entry: PlaylistEntry,
+    source_id: str,
+    force_group_title: str | None = None,
+) -> PlaylistEntry:
+    """Mark an upstream entry so a later failed fetch can remove it."""
+    marker = source_marker(source_id)
+    body = tuple(
+        line
+        for line in entry.body_lines
+        if not line.startswith(SOURCE_MARKER_PREFIX)
+    )
+    group_title = force_group_title or canonical_group(entry.group_title)
+    extinf = entry.extinf
+    if group_title != "Other" and group_title != entry.group_title:
+        extinf = _set_group_title(extinf, group_title)
+    return replace(
+        entry,
+        extinf=extinf,
+        body_lines=(marker, *body),
+        group_title=group_title if group_title != "Other" else entry.group_title,
+    )
+
+
+def render_combined_playlist(header: list[str], entries: list[PlaylistEntry]) -> str:
+    header_lines = header or ["#EXTM3U"]
+    lines = list(header_lines)
+    if lines and not lines[0].upper().startswith("#EXTM3U"):
+        lines.insert(0, "#EXTM3U")
+    for entry in entries:
+        lines.extend(entry.render())
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def should_keep_incoming(entry: PlaylistEntry) -> bool:
+    name = entry.tvg_name or entry.display_name
+    return not skip_channel(entry.group_title, name, entry.extinf)
+
+
+def merge_combined_entries(
+    base_entries: list[PlaylistEntry],
+    incoming: list[PlaylistEntry],
+    source_id: str,
+    force_group_title: str | None = None,
+) -> list[PlaylistEntry]:
+    kept_base = strip_source_entries(base_entries, source_id)
+    existing_ids = {
+        entry.tvg_id.strip().lower()
+        for entry in kept_base
+        if entry.tvg_id.strip()
+    }
+    existing_names = {channel_identity(entry) for entry in kept_base}
+    tagged = [
+        tag_source_entry(entry, source_id, force_group_title=force_group_title)
+        for entry in incoming
+    ]
+    added: list[PlaylistEntry] = []
+    for entry in tagged:
+        identity = channel_identity(entry)
+        tvg_id = entry.tvg_id.strip().lower()
+        if tvg_id and tvg_id in existing_ids:
+            continue
+        if identity in existing_names:
+            continue
+        added.append(entry)
+        if tvg_id:
+            existing_ids.add(tvg_id)
+        existing_names.add(identity)
+
+    merged = kept_base + added
+    ranked = sorted(
+        enumerate(merged),
+        key=lambda item: sort_key(
+            item[1].group_title,
+            item[1].tvg_name or item[1].display_name,
+            item[0],
+        ),
+    )
+    return [entry for _, entry in ranked]
+
+
+def write_combined_playlist(
+    path: Path,
+    header: list[str],
+    entries: list[PlaylistEntry],
+) -> None:
+    atomic_write(path, render_combined_playlist(header, entries))
+
+
+def load_combined_playlist(path: Path) -> tuple[list[str], list[PlaylistEntry]]:
+    if not path.exists():
+        raise PlaylistError(f"{path.name} is missing")
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise PlaylistError(f"{path.name} is empty")
+    return parse_playlist(text)
+
+
+def remove_stale_source_channels(path: Path, source_id: str) -> int:
+    """Drop previously merged channels from this source after a failed fetch."""
+    header, entries = load_combined_playlist(path)
+    cleaned = strip_source_entries(entries, source_id)
+    removed = len(entries) - len(cleaned)
+    write_combined_playlist(path, header, cleaned)
+    return removed
+
+
 def fetch_playlist(url: str) -> tuple[int, str]:
     """GET the authorized source playlist with limited retries.
 
@@ -407,13 +554,35 @@ def atomic_write(path: Path, contents: str) -> None:
     os.replace(temp_path, path)
 
 
-def load_source_url(env_name: str) -> str:
+def load_source_url(env_name: str, default: str = "") -> str:
     url = os.environ.get(env_name, "").strip()
-    if not url:
-        raise PlaylistError(
-            f"{env_name} is not set. Export an authorized playlist URL."
+    if url:
+        return url
+    if default.strip():
+        return default.strip()
+    raise PlaylistError(
+        f"{env_name} is not set. Export an authorized playlist URL."
+    )
+
+def _clear_stale_combined(
+    combined_path: Path | None, source_id: str | None, combined_name: str | None
+) -> None:
+    if combined_path is None or not source_id or not combined_name:
+        return
+    if not combined_path.exists():
+        print(
+            f"{combined_name} was not found; nothing to strip.",
+            file=sys.stderr,
         )
-    return url
+        return
+    try:
+        removed = remove_stale_source_channels(combined_path, source_id)
+        print(
+            f"Removed {removed} stale {source_id} channels from {combined_name}.",
+            file=sys.stderr,
+        )
+    except PlaylistError as extra:
+        print(f"ERROR: could not clean {combined_name}: {extra}", file=sys.stderr)
 
 
 def run_update(
@@ -421,25 +590,35 @@ def run_update(
     output_filename: str,
     match_fn,
     label: str,
+    default_source_url: str = "",
+    combined_filename: str | None = None,
+    source_id: str | None = None,
+    force_group_title: str | None = None,
+    filter_standalone: bool = True,
+    parse_entries_fn=None,
 ) -> int:
     repo_root = Path(__file__).resolve().parent.parent
     output_path = repo_root / output_filename
     temp_path = output_path.with_name(output_path.name + ".tmp")
+    combined_path = repo_root / combined_filename if combined_filename else None
 
     try:
-        source_url = load_source_url(source_env)
+        source_url = load_source_url(source_env, default=default_source_url)
         print("Fetching playlist...")
         print(f"Source: {redact_url(source_url)}")
         status, body = fetch_playlist(source_url)
         print(f"HTTP status: {status}")
-        looks_like_m3u(body, status)
-        downloaded_lines = body.splitlines()
-        print(f"Downloaded: {len(downloaded_lines)} lines")
-
-        _, entries = parse_playlist(body)
+        if parse_entries_fn is not None:
+            entries = parse_entries_fn(body, status)
+        else:
+            looks_like_m3u(body, status)
+            _, entries = parse_playlist(body)
+        print(f"Downloaded: {len(body.splitlines())} lines")
         print(f"Parsed entries: {len(entries)}")
 
         matched = [entry for entry in entries if match_fn(entry)]
+        if filter_standalone:
+            matched = [entry for entry in matched if should_keep_incoming(entry)]
         print(f"{label} channels found: {len(matched)}")
         unique_entries, duplicates_removed = deduplicate(matched)
         print(f"Duplicates removed: {duplicates_removed}")
@@ -448,14 +627,34 @@ def run_update(
         playlist_text = render_playlist(unique_entries)
         atomic_write(output_path, playlist_text)
         print(f"Output written: {output_filename}")
+
+        if combined_path is not None and source_id:
+            incoming = [
+                entry for entry in unique_entries if should_keep_incoming(entry)
+            ]
+            header, base_entries = load_combined_playlist(combined_path)
+            merged = merge_combined_entries(
+                base_entries,
+                incoming,
+                source_id,
+                force_group_title=force_group_title,
+            )
+            write_combined_playlist(combined_path, header, merged)
+            added = sum(1 for entry in merged if is_source_entry(entry, source_id))
+            print(
+                f"Combined playlist written: {combined_filename} "
+                f"({added} {source_id} channels)"
+            )
         return 0
-    except PlaylistError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+    except PlaylistError as extra:
+        print(f"ERROR: {extra}", file=sys.stderr)
         print(f"Existing {output_filename} was not overwritten.", file=sys.stderr)
+        _clear_stale_combined(combined_path, source_id, combined_filename)
         return 1
-    except Exception as exc:  # noqa: BLE001 - surface unexpected failures clearly
-        print(f"ERROR: unexpected failure: {exc}", file=sys.stderr)
+    except Exception as extra:  # noqa: BLE001 - surface unexpected failures clearly
+        print(f"ERROR: unexpected failure: {extra}", file=sys.stderr)
         print(f"Existing {output_filename} was not overwritten.", file=sys.stderr)
+        _clear_stale_combined(combined_path, source_id, combined_filename)
         return 1
     finally:
         if temp_path.exists():
@@ -468,6 +667,9 @@ def main() -> int:
         output_filename=OUTPUT_FILENAME,
         match_fn=is_zee_channel,
         label="Zee",
+        default_source_url=DEFAULT_SOURCE_M3U_URL,
+        combined_filename=COMBINED_FILENAME,
+        source_id=SOURCE_ID,
     )
 
 

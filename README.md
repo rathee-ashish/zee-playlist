@@ -3,6 +3,7 @@
 This repository fetches **authorized** upstream M3U playlists and writes:
 
 - `zee.m3u` — Zee-family channels
+- `all-channels.m3u` — combined playlist (base channels, Zee-family channels by category, and a **Star Sports** group)
 - `star_sports.m3u` — Star Sports channels
 
 It does **not** generate, forge, modify, decode, or bypass authentication tokens, cookies, signatures, WAF protections, or DRM. Stream URLs from the source playlist are copied as opaque strings. The resulting file is only useful if you are authorized to use the upstream source and the provider permits this kind of redistribution.
@@ -14,8 +15,9 @@ It does **not** generate, forge, modify, decode, or bypass authentication tokens
 3. Keeps channels whose **metadata** identifies them as Zee-family.
 4. Removes duplicates while keeping distinct HD/SD variants.
 5. Writes `zee.m3u` only after validation succeeds.
+6. Merges those Zee channels into `all-channels.m3u` by category (Entertainment, Movies, Sports, and so on). Each merged entry is tagged with `#PLAYLIST-SOURCE:zee`.
 
-If the source is down, returns a non-playlist body, or yields zero Zee channels, the previous `zee.m3u` is left unchanged.
+If the Zee source fails, previously merged `#PLAYLIST-SOURCE:zee` channels are removed from `all-channels.m3u`. If the Star Sports source fails, previously merged `#PLAYLIST-SOURCE:star-sports` channels (the **Star Sports** group) are removed.
 
 ## Setup
 
@@ -32,10 +34,11 @@ pip install -r requirements.txt
 Then:
 
 ```bash
+# Optional: override the default Zee source URL in scripts/update_zee.py
 export SOURCE_M3U_URL="https://example.com/authorized-playlist.m3u"
 python scripts/update_zee.py
 
-export SOURCE_STAR_M3U_URL="https://raw.githubusercontent.com/sportlive18/jio-tv-auto-update-playlist/main/Star.m3u"
+export SOURCE_STAR_M3U_URL="https://sportlink-jtv.pages.dev/Star.json"
 python scripts/update_star_sports.py
 ```
 
@@ -52,9 +55,9 @@ Configure the source URL in the GitHub UI:
 3. If the URL is not sensitive, add a **Variables** entry named `SOURCE_M3U_URL`.
 4. If the URL embeds credentials, add a **Secret** named `SOURCE_M3U_URL` instead.
 
-The workflow reads `vars.SOURCE_M3U_URL` / `vars.SOURCE_STAR_M3U_URL` first, then the matching secrets. It refetches every 4 hours and rewrites `zee.m3u` and `star_sports.m3u`.
+The workflow reads `vars.SOURCE_M3U_URL` / `vars.SOURCE_STAR_M3U_URL` first, then the matching secrets. If `SOURCE_M3U_URL` is unset, `scripts/update_zee.py` uses `DEFAULT_SOURCE_M3U_URL`. Change that constant (or the env var) when the upstream playlist URL moves. The job refetches every 4 hours and rewrites `zee.m3u`, `all-channels.m3u`, and `star_sports.m3u`.
 
-`SOURCE_STAR_M3U_URL` should be an M3U playlist you are allowed to download (for example the published [Star.m3u](https://raw.githubusercontent.com/sportlive18/jio-tv-auto-update-playlist/main/Star.m3u)). This project does **not** call `Star.json` or generate `__hdnea__` cookies.
+`SOURCE_STAR_M3U_URL` defaults to [Star.json](https://sportlink-jtv.pages.dev/Star.json). The updater copies `url` / `keyId` / `key` fields as opaque playlist lines. It does **not** generate `__hdnea__` cookies. Only channels whose names match Star Sports are kept.
 
 Required permission: `contents: write` (already set in the workflow so the job can commit `zee.m3u`).
 
@@ -79,6 +82,7 @@ The file is only useful if the upstream source is authorized and the provider pe
 
 - The workflow periodically fetches the upstream playlist (see schedule below).
 - `zee.m3u` is replaced only after HTTP, M3U, Zee-match, and per-entry validation succeed.
+- On a failed Zee fetch, tagged Zee entries are stripped from `all-channels.m3u` so stale URLs are not kept.
 - GitHub Actions schedules are **not** guaranteed to run at the exact second; jobs can be delayed.
 - Upstream stream URLs often expire after about 6 hours. This repo does **not** extend or regenerate those URLs. It downloads a fresh playlist from `SOURCE_M3U_URL` on a schedule so `zee.m3u` is replaced before the previous copy goes stale.
 - GitHub Actions schedules are **not** guaranteed to run at the exact second; jobs can be delayed.
