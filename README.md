@@ -58,7 +58,7 @@ Configure the source URL in the GitHub UI:
 
 The workflow reads `vars.SOURCE_M3U_URL` / `vars.SOURCE_STAR_M3U_URL` first, then the matching secrets. If `SOURCE_M3U_URL` is unset, `scripts/update_zee.py` uses `DEFAULT_SOURCE_M3U_URL`. Change that constant (or the env var) when the upstream playlist URL moves. The job refetches every 4 hours and rewrites `zee.m3u`, `all-channels.m3u`, and `star_sports.m3u`.
 
-`SOURCE_STAR_M3U_URL` defaults to [Star.json](https://sportlink-jtv.pages.dev/Star.json). Names, logos, URLs, and license fields are copied from that JSON. Playback `__hdnea__` cookies are copied from the published cookie feed used by [sportlive18/jio-tv-auto-update-playlist](https://github.com/sportlive18/jio-tv-auto-update-playlist) (`script/jtv.py`). This project does **not** generate HMAC cookies. Only channels whose names match Star Sports are kept.
+`SOURCE_STAR_M3U_URL` defaults to [Star.json](https://sportlink-jtv.pages.dev/Star.json). Names, logos, URLs, and license fields are copied from that JSON. Playback `__hdnea__` cookies are copied from the published cookie feed used by [sportlive18/jio-tv-auto-update-playlist](https://github.com/sportlive18/jio-tv-auto-update-playlist) (`script/jtv.py`). The same token is copied onto the stream URL query plus `#EXTHTTP` / `stream_headers` so OTT Navigator Pro and TiviMate-style players both receive it. This project does **not** generate HMAC cookies. Only channels whose names match Star Sports are kept.
 
 Required permission: `contents: write` (already set in the workflow so the job can commit `zee.m3u`).
 

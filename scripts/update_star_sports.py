@@ -98,9 +98,58 @@ def _extract_cookie_from_url(url: str) -> tuple[str, str]:
 
 def _clean_base_url(raw_url: str) -> str:
     parsed = urlparse(raw_url)
+    path = re.sub(r"/{2,}", "/", parsed.path or "")
     return urlunparse(
-        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, "", "")
+        (parsed.scheme, parsed.netloc, path, parsed.params, "", "")
     )
+
+
+def _url_with_cookie_query(url: str, cookie: str) -> str:
+    """Keep the copied token on the URL so players that ignore EXTHTTP still send it."""
+    base = _clean_base_url(url)
+    if not cookie or "=" not in cookie:
+        return base
+    key = cookie.split("=", 1)[0]
+    existing = parse_qs(urlparse(url).query, keep_blank_values=True)
+    if key in existing:
+        parsed = urlparse(url)
+        path = re.sub(r"/{2,}", "/", parsed.path or "")
+        return urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+    separator = "&" if urlparse(base).query else "?"
+    return f"{base}{separator}{cookie}"
+
+
+def _playback_header_lines(cookie: str, stream_url: str) -> list[str]:
+    """Headers for TiviMate, Chrome IPTV players, and OTT Navigator Pro."""
+    lines: list[str] = []
+    if cookie:
+        lines.append(
+            "#EXTHTTP:"
+            + json.dumps(
+                {
+                    "cookie": cookie,
+                    "Cookie": cookie,
+                    "User-Agent": PLAYBACK_USER_AGENT,
+                },
+                separators=(",", ":"),
+            )
+        )
+        lines.append(
+            "#KODIPROP:inputstream.adaptive.stream_headers="
+            f"User-Agent={PLAYBACK_USER_AGENT}&Cookie={cookie}"
+        )
+    lines.append(f'#EXTVLCOPT:http-user-agent="{PLAYBACK_USER_AGENT}"')
+    lines.append(stream_url)
+    return lines
 
 
 def fetch_sports_cookies() -> dict[str, dict[str, str]]:
@@ -193,7 +242,9 @@ def _star_json_item_to_entry(
     cookie = cookie_entry.get("cookie") or ""
     if not cookie:
         final_url, cookie = _extract_cookie_from_url(final_url)
-    if not cookie:
+    if cookie:
+        final_url = _url_with_cookie_query(final_url, cookie)
+    else:
         final_url = _clean_base_url(final_url)
 
     extinf = (
@@ -217,10 +268,7 @@ def _star_json_item_to_entry(
                 "#KODIPROP:inputstream.adaptive.license_key="
                 f"{key_id}:{key}"
             )
-    if cookie:
-        body.append("#EXTHTTP:" + json.dumps({"cookie": cookie}))
-    body.append(f"#EXTVLCOPT:http-user-agent={PLAYBACK_USER_AGENT}")
-    body.append(final_url)
+    body.extend(_playback_header_lines(cookie, final_url))
     return PlaylistEntry(
         extinf=extinf,
         body_lines=tuple(body),
