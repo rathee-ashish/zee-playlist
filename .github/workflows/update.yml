@@ -32,14 +32,19 @@ jobs:
           SOURCE_M3U_URL: ${{ vars.SOURCE_M3U_URL || secrets.SOURCE_M3U_URL }}
         run: python scripts/update_zee.py
 
-      - name: Commit and push zee.m3u when it changed
+      - name: Run Star Sports playlist updater
+        env:
+          SOURCE_STAR_M3U_URL: ${{ vars.SOURCE_STAR_M3U_URL || secrets.SOURCE_STAR_M3U_URL }}
+        run: python scripts/update_star_sports.py
+
+      - name: Commit and push playlists when they changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add zee.m3u
+          git add zee.m3u star_sports.m3u
           if git diff --staged --quiet; then
             echo "No playlist changes to commit."
             exit 0
           fi
-          git commit -m "chore: update Zee playlist"
+          git commit -m "chore: update playlists"
           git push

@@ -23,7 +23,6 @@ HTTP_TIMEOUT_SECONDS = 30
 MAX_RETRIES = 3
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 OUTPUT_FILENAME = "zee.m3u"
-TEMP_FILENAME = "zee.m3u.tmp"
 USER_AGENT = "zee-playlist-updater/1.0 (+https://github.com)"
 
 # Query keys that must never appear in logs.
@@ -335,9 +334,9 @@ def deduplicate(entries: Iterable[PlaylistEntry]) -> tuple[list[PlaylistEntry], 
     return unique, removed
 
 
-def validate_entries(entries: list[PlaylistEntry]) -> None:
+def validate_entries(entries: list[PlaylistEntry], label: str) -> None:
     if not entries:
-        raise PlaylistError("No Zee channels found; keeping the previous playlist")
+        raise PlaylistError(f"No {label} channels found; keeping the previous playlist")
     for index, entry in enumerate(entries, start=1):
         if not entry.extinf.startswith("#EXTINF"):
             raise PlaylistError(f"Entry {index} is missing #EXTINF metadata")
@@ -400,7 +399,7 @@ def fetch_playlist(url: str) -> tuple[int, str]:
 
 
 def atomic_write(path: Path, contents: str) -> None:
-    temp_path = path.with_name(TEMP_FILENAME)
+    temp_path = path.with_name(path.name + ".tmp")
     temp_path.write_text(contents, encoding="utf-8")
     if temp_path.stat().st_size == 0:
         temp_path.unlink(missing_ok=True)
@@ -408,21 +407,27 @@ def atomic_write(path: Path, contents: str) -> None:
     os.replace(temp_path, path)
 
 
-def load_source_url() -> str:
-    url = os.environ.get("SOURCE_M3U_URL", "").strip()
+def load_source_url(env_name: str) -> str:
+    url = os.environ.get(env_name, "").strip()
     if not url:
         raise PlaylistError(
-            "SOURCE_M3U_URL is not set. Export an authorized playlist URL."
+            f"{env_name} is not set. Export an authorized playlist URL."
         )
     return url
 
 
-def main() -> int:
+def run_update(
+    source_env: str,
+    output_filename: str,
+    match_fn,
+    label: str,
+) -> int:
     repo_root = Path(__file__).resolve().parent.parent
-    output_path = repo_root / OUTPUT_FILENAME
+    output_path = repo_root / output_filename
+    temp_path = output_path.with_name(output_path.name + ".tmp")
 
     try:
-        source_url = load_source_url()
+        source_url = load_source_url(source_env)
         print("Fetching playlist...")
         print(f"Source: {redact_url(source_url)}")
         status, body = fetch_playlist(source_url)
@@ -434,28 +439,36 @@ def main() -> int:
         _, entries = parse_playlist(body)
         print(f"Parsed entries: {len(entries)}")
 
-        zee_entries = [entry for entry in entries if is_zee_channel(entry)]
-        print(f"Zee channels found: {len(zee_entries)}")
-        unique_entries, duplicates_removed = deduplicate(zee_entries)
+        matched = [entry for entry in entries if match_fn(entry)]
+        print(f"{label} channels found: {len(matched)}")
+        unique_entries, duplicates_removed = deduplicate(matched)
         print(f"Duplicates removed: {duplicates_removed}")
-        validate_entries(unique_entries)
+        validate_entries(unique_entries, label)
 
         playlist_text = render_playlist(unique_entries)
         atomic_write(output_path, playlist_text)
-        print(f"Output written: {OUTPUT_FILENAME}")
+        print(f"Output written: {output_filename}")
         return 0
     except PlaylistError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        print("Existing zee.m3u was not overwritten.", file=sys.stderr)
+        print(f"Existing {output_filename} was not overwritten.", file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001 - surface unexpected failures clearly
         print(f"ERROR: unexpected failure: {exc}", file=sys.stderr)
-        print("Existing zee.m3u was not overwritten.", file=sys.stderr)
+        print(f"Existing {output_filename} was not overwritten.", file=sys.stderr)
         return 1
     finally:
-        temp_path = repo_root / TEMP_FILENAME
         if temp_path.exists():
             temp_path.unlink()
+
+
+def main() -> int:
+    return run_update(
+        source_env="SOURCE_M3U_URL",
+        output_filename=OUTPUT_FILENAME,
+        match_fn=is_zee_channel,
+        label="Zee",
+    )
 
 
 if __name__ == "__main__":
