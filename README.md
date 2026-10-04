@@ -17,7 +17,7 @@ If the source is down, returns a non-playlist body, or yields zero Zee channels,
 ## Setup
 
 ```bash
-git clone <repo>
+git clone https://github.com/rathee-ashish/zee-playlist.git
 cd zee-playlist
 
 python -m venv .venv
@@ -55,16 +55,16 @@ Required permission: `contents: write` (already set in the workflow so the job c
 After the repository exists on GitHub, the generated playlist can be consumed from:
 
 ```text
-https://raw.githubusercontent.com/<USERNAME>/<REPOSITORY>/main/zee.m3u
+https://raw.githubusercontent.com/rathee-ashish/zee-playlist/main/zee.m3u
 ```
 
 If GitHub Pages is enabled for the repository root on the `main` branch:
 
 ```text
-https://<USERNAME>.github.io/<REPOSITORY>/zee.m3u
+https://rathee-ashish.github.io/zee-playlist/zee.m3u
 ```
 
-Replace `<USERNAME>` and `<REPOSITORY>` with the real GitHub owner and repo name. Do not assume the playlist will play unless the upstream source is authorized and redistribution is allowed.
+The file is only useful if the upstream source is authorized and the provider permits redistribution. Until `SOURCE_M3U_URL` is configured and the workflow has produced a filtered playlist, `zee.m3u` contains only the `#EXTM3U` header.
 
 ## Refresh behavior
 

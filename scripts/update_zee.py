@@ -126,9 +126,10 @@ def parse_extinf(extinf: str) -> dict[str, str]:
 def parse_playlist(text: str) -> tuple[list[str], list[PlaylistEntry]]:
     """Parse M3U text into header lines and channel entries.
 
-    An entry starts at #EXTINF and includes following metadata comment lines
-    until the first non-comment line, which is treated as the stream URL.
-    URLs are stored unchanged.
+    An entry starts at #EXTINF. Following non-empty lines belong to that
+    entry until the next #EXTINF. The first non-comment line is the stream
+    URL and is stored unchanged. Other metadata comment lines are preserved
+    in original order.
     """
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     header: list[str] = []
