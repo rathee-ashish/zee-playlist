@@ -62,6 +62,9 @@ SKIP_NAME_MARKERS = (
     "zee telugu",
     "zee kannada",
     "zee bangla",
+    "cartoon network hd marathi",
+    "cartoon network marathi",
+    "pogo marathi",
 )
 
 # Lower index = more watched. HD of a brand still ranks above its SD.
@@ -257,6 +260,31 @@ def is_test_channel(name: str) -> bool:
     return bool(re.match(r"^test(\d+|a)?\b", name.lower().strip()))
 
 
+def language_from_extinf(extinf: str) -> str:
+    match = LANG_ATTR_RE.search(extinf)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def kids_language_rank(group_title: str, name: str, language: str = "") -> int:
+    """Kids: Hindi first, then English, then remaining languages."""
+    if canonical_group(group_title) != "Kids":
+        return 0
+    lang = normalize_text(language)
+    if not lang:
+        tokens = set(_tokens(name))
+        if "hindi" in tokens:
+            lang = "hindi"
+        elif "english" in tokens:
+            lang = "english"
+    if lang == "hindi":
+        return 0
+    if lang == "english":
+        return 1
+    return 2
+
+
 def skip_channel(group_title: str, name: str, extinf: str = "") -> bool:
     group_key = normalize_text(group_title)
     if group_key in SKIP_GROUPS:
@@ -271,10 +299,18 @@ def skip_channel(group_title: str, name: str, extinf: str = "") -> bool:
     return any(marker in normalized for marker in SKIP_NAME_MARKERS)
 
 
-def sort_key(group_title: str, name: str, original_index: int) -> tuple:
+def sort_key(
+    group_title: str,
+    name: str,
+    original_index: int,
+    language: str = "",
+    extinf: str = "",
+) -> tuple:
+    lang = language or language_from_extinf(extinf)
     return (
         is_test_channel(name),
         category_rank(group_title),
+        kids_language_rank(group_title, name, lang),
         popularity_rank(group_title, name) + quality_rank(name) * 2,
         quality_rank(name),
         original_index,

@@ -16,8 +16,9 @@ It does **not** generate, forge, modify, decode, or bypass authentication tokens
 4. Removes duplicates while keeping distinct HD/SD variants.
 5. Writes `zee.m3u` only after validation succeeds.
 6. Merges those Zee channels into `all-channels.m3u` by category (Entertainment, Movies, Sports, and so on). Each merged entry is tagged with `#PLAYLIST-SOURCE:zee`.
+7. From the same source, prefers **Colors** channels in `all-channels.m3u` (tagged `#PLAYLIST-SOURCE:colors`). If the source has no Colors feeds or the fetch fails, Colors URLs fall back to `jiotv_playlist.m3u` (localhost).
 
-If the Zee source fails, previously merged `#PLAYLIST-SOURCE:zee` channels are removed from `all-channels.m3u`. If the Star Sports source fails, previously merged `#PLAYLIST-SOURCE:star-sports` channels (the **Star Sports** group) are removed.
+If the Zee source fails, previously merged `#PLAYLIST-SOURCE:zee` channels are removed from `all-channels.m3u`, and Colors channels are restored from `jiotv_playlist.m3u`. If the Star Sports source fails, previously merged `#PLAYLIST-SOURCE:star-sports` channels (the **Star Sports** group) are removed.
 
 ## Setup
 
@@ -57,7 +58,7 @@ Configure the source URL in the GitHub UI:
 
 The workflow reads `vars.SOURCE_M3U_URL` / `vars.SOURCE_STAR_M3U_URL` first, then the matching secrets. If `SOURCE_M3U_URL` is unset, `scripts/update_zee.py` uses `DEFAULT_SOURCE_M3U_URL`. Change that constant (or the env var) when the upstream playlist URL moves. The job refetches every 4 hours and rewrites `zee.m3u`, `all-channels.m3u`, and `star_sports.m3u`.
 
-`SOURCE_STAR_M3U_URL` defaults to [Star.json](https://sportlink-jtv.pages.dev/Star.json). The updater copies `url` / `keyId` / `key` fields as opaque playlist lines. It does **not** generate `__hdnea__` cookies. Only channels whose names match Star Sports are kept.
+`SOURCE_STAR_M3U_URL` defaults to [Star.json](https://sportlink-jtv.pages.dev/Star.json). Names, logos, URLs, and license fields are copied from that JSON. Playback `__hdnea__` cookies are copied from the published cookie feed used by [sportlive18/jio-tv-auto-update-playlist](https://github.com/sportlive18/jio-tv-auto-update-playlist) (`script/jtv.py`). This project does **not** generate HMAC cookies. Only channels whose names match Star Sports are kept.
 
 Required permission: `contents: write` (already set in the workflow so the job can commit `zee.m3u`).
 

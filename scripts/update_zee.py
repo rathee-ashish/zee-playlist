@@ -19,14 +19,16 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
-from playlist_order import canonical_group, skip_channel, sort_key
+from playlist_order import canonical_group, language_from_extinf, skip_channel, sort_key
 
 HTTP_TIMEOUT_SECONDS = 30
 MAX_RETRIES = 3
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 OUTPUT_FILENAME = "zee.m3u"
 COMBINED_FILENAME = "all-channels.m3u"
+LOCAL_PLAYLIST_FILENAME = "jiotv_playlist.m3u"
 SOURCE_ID = "zee"
+COLORS_SOURCE_ID = "colors"
 # Replace this URL (or set SOURCE_M3U_URL) when the upstream playlist moves.
 DEFAULT_SOURCE_M3U_URL = "https://premiumplugx.top/jiostb/mjelo.php?view=raw"
 SOURCE_MARKER_PREFIX = "#PLAYLIST-SOURCE:"
@@ -317,6 +319,31 @@ def is_zee_channel(entry: PlaylistEntry) -> bool:
     return False
 
 
+def is_colors_channel(entry: PlaylistEntry) -> bool:
+    """True when the channel identity starts with the Colors brand."""
+    for field_value in (entry.tvg_name, entry.display_name):
+        if not field_value:
+            continue
+        tokens = identity_tokens(field_value)
+        if tokens and tokens[0] == "colors":
+            return True
+    compact = NON_ALNUM.sub("", entry.tvg_id.strip().lower())
+    return compact.startswith("colors")
+
+
+def rank_entries(entries: list[PlaylistEntry]) -> list[PlaylistEntry]:
+    ranked = sorted(
+        enumerate(entries),
+        key=lambda item: sort_key(
+            item[1].group_title,
+            item[1].tvg_name or item[1].display_name,
+            item[0],
+            language=language_from_extinf(item[1].extinf),
+        ),
+    )
+    return [entry for _, entry in ranked]
+
+
 def channel_identity(entry: PlaylistEntry) -> str:
     """Stable duplicate key. HD/SD remain distinct when names or URLs differ."""
     if entry.tvg_id.strip():
@@ -464,15 +491,67 @@ def merge_combined_entries(
         existing_names.add(identity)
 
     merged = kept_base + added
-    ranked = sorted(
-        enumerate(merged),
-        key=lambda item: sort_key(
-            item[1].group_title,
-            item[1].tvg_name or item[1].display_name,
-            item[0],
-        ),
-    )
-    return [entry for _, entry in ranked]
+    return rank_entries(merged)
+
+
+def strip_colors_channels(entries: Iterable[PlaylistEntry]) -> list[PlaylistEntry]:
+    return [entry for entry in entries if not is_colors_channel(entry)]
+
+
+def load_local_colors(repo_root: Path) -> list[PlaylistEntry]:
+    path = repo_root / LOCAL_PLAYLIST_FILENAME
+    if not path.exists():
+        raise PlaylistError(f"{LOCAL_PLAYLIST_FILENAME} is missing")
+    _, entries = parse_playlist(path.read_text(encoding="utf-8"))
+    matched = [
+        entry
+        for entry in entries
+        if is_colors_channel(entry) and should_keep_incoming(entry)
+    ]
+    unique, _ = deduplicate(matched)
+    return unique
+
+
+def apply_colors_priority(
+    base_entries: list[PlaylistEntry],
+    remote_colors: list[PlaylistEntry],
+    local_colors: list[PlaylistEntry],
+) -> list[PlaylistEntry]:
+    """Prefer upstream Colors URLs; fill gaps from the localhost playlist."""
+    without_colors = strip_colors_channels(base_entries)
+    tagged_remote = [
+        tag_source_entry(entry, COLORS_SOURCE_ID)
+        for entry in remote_colors
+        if should_keep_incoming(entry)
+    ]
+    remote_ids = {channel_identity(entry) for entry in tagged_remote}
+    remote_tvg_ids = {
+        entry.tvg_id.strip().lower()
+        for entry in tagged_remote
+        if entry.tvg_id.strip()
+    }
+    fallback = []
+    used = set(remote_ids)
+    used_tvg = set(remote_tvg_ids)
+    for entry in local_colors:
+        identity = channel_identity(entry)
+        tvg_id = entry.tvg_id.strip().lower()
+        if identity in used or (tvg_id and tvg_id in used_tvg):
+            continue
+        fallback.append(entry)
+        used.add(identity)
+        if tvg_id:
+            used_tvg.add(tvg_id)
+    return rank_entries(without_colors + tagged_remote + fallback)
+
+
+def restore_local_colors(combined_path: Path, repo_root: Path) -> int:
+    """Replace remote Colors feeds with localhost copies from jiotv_playlist.m3u."""
+    header, entries = load_combined_playlist(combined_path)
+    local_colors = load_local_colors(repo_root)
+    restored = apply_colors_priority(entries, [], local_colors)
+    write_combined_playlist(combined_path, header, restored)
+    return len(local_colors)
 
 
 def write_combined_playlist(
@@ -565,7 +644,11 @@ def load_source_url(env_name: str, default: str = "") -> str:
     )
 
 def _clear_stale_combined(
-    combined_path: Path | None, source_id: str | None, combined_name: str | None
+    combined_path: Path | None,
+    source_id: str | None,
+    combined_name: str | None,
+    repo_root: Path | None = None,
+    restore_colors: bool = False,
 ) -> None:
     if combined_path is None or not source_id or not combined_name:
         return
@@ -581,6 +664,13 @@ def _clear_stale_combined(
             f"Removed {removed} stale {source_id} channels from {combined_name}.",
             file=sys.stderr,
         )
+        if restore_colors and repo_root is not None:
+            restored = restore_local_colors(combined_path, repo_root)
+            print(
+                f"Restored {restored} localhost Colors channels from "
+                f"{LOCAL_PLAYLIST_FILENAME}.",
+                file=sys.stderr,
+            )
     except PlaylistError as extra:
         print(f"ERROR: could not clean {combined_name}: {extra}", file=sys.stderr)
 
@@ -596,6 +686,7 @@ def run_update(
     force_group_title: str | None = None,
     filter_standalone: bool = True,
     parse_entries_fn=None,
+    prefer_colors: bool = False,
 ) -> int:
     repo_root = Path(__file__).resolve().parent.parent
     output_path = repo_root / output_filename
@@ -624,6 +715,20 @@ def run_update(
         print(f"Duplicates removed: {duplicates_removed}")
         validate_entries(unique_entries, label)
 
+        remote_colors: list[PlaylistEntry] = []
+        if prefer_colors:
+            remote_colors, colors_dups = deduplicate(
+                [
+                    entry
+                    for entry in entries
+                    if is_colors_channel(entry) and should_keep_incoming(entry)
+                ]
+            )
+            print(
+                f"Colors channels from source: {len(remote_colors)} "
+                f"(duplicates removed: {colors_dups})"
+            )
+
         playlist_text = render_playlist(unique_entries)
         atomic_write(output_path, playlist_text)
         print(f"Output written: {output_filename}")
@@ -639,6 +744,22 @@ def run_update(
                 source_id,
                 force_group_title=force_group_title,
             )
+            if prefer_colors:
+                local_colors = load_local_colors(repo_root)
+                merged = apply_colors_priority(merged, remote_colors, local_colors)
+                remote_used = sum(
+                    1 for entry in merged if is_source_entry(entry, COLORS_SOURCE_ID)
+                )
+                local_used = sum(
+                    1
+                    for entry in merged
+                    if is_colors_channel(entry)
+                    and not is_source_entry(entry, COLORS_SOURCE_ID)
+                )
+                print(
+                    f"Colors priority: {remote_used} from source, "
+                    f"{local_used} localhost fallback"
+                )
             write_combined_playlist(combined_path, header, merged)
             added = sum(1 for entry in merged if is_source_entry(entry, source_id))
             print(
@@ -649,12 +770,24 @@ def run_update(
     except PlaylistError as extra:
         print(f"ERROR: {extra}", file=sys.stderr)
         print(f"Existing {output_filename} was not overwritten.", file=sys.stderr)
-        _clear_stale_combined(combined_path, source_id, combined_filename)
+        _clear_stale_combined(
+            combined_path,
+            source_id,
+            combined_filename,
+            repo_root=repo_root,
+            restore_colors=prefer_colors,
+        )
         return 1
     except Exception as extra:  # noqa: BLE001 - surface unexpected failures clearly
         print(f"ERROR: unexpected failure: {extra}", file=sys.stderr)
         print(f"Existing {output_filename} was not overwritten.", file=sys.stderr)
-        _clear_stale_combined(combined_path, source_id, combined_filename)
+        _clear_stale_combined(
+            combined_path,
+            source_id,
+            combined_filename,
+            repo_root=repo_root,
+            restore_colors=prefer_colors,
+        )
         return 1
     finally:
         if temp_path.exists():
@@ -670,6 +803,7 @@ def main() -> int:
         default_source_url=DEFAULT_SOURCE_M3U_URL,
         combined_filename=COMBINED_FILENAME,
         source_id=SOURCE_ID,
+        prefer_colors=True,
     )
 
 
