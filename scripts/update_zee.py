@@ -498,11 +498,18 @@ def strip_colors_channels(entries: Iterable[PlaylistEntry]) -> list[PlaylistEntr
     return [entry for entry in entries if not is_colors_channel(entry)]
 
 
-def load_local_colors(repo_root: Path) -> list[PlaylistEntry]:
+def load_local_playlist(repo_root: Path) -> tuple[list[str], list[PlaylistEntry]]:
+    """Load jiotv_playlist.m3u as the base channel list for all-channels.m3u."""
     path = repo_root / LOCAL_PLAYLIST_FILENAME
     if not path.exists():
         raise PlaylistError(f"{LOCAL_PLAYLIST_FILENAME} is missing")
-    _, entries = parse_playlist(path.read_text(encoding="utf-8"))
+    header, entries = parse_playlist(path.read_text(encoding="utf-8"))
+    kept = [entry for entry in entries if should_keep_incoming(entry)]
+    return header, kept
+
+
+def load_local_colors(repo_root: Path) -> list[PlaylistEntry]:
+    _, entries = load_local_playlist(repo_root)
     matched = [
         entry
         for entry in entries
@@ -510,6 +517,29 @@ def load_local_colors(repo_root: Path) -> list[PlaylistEntry]:
     ]
     unique, _ = deduplicate(matched)
     return unique
+
+
+def has_source_marker(entry: PlaylistEntry) -> bool:
+    return any(line.startswith(SOURCE_MARKER_PREFIX) for line in entry.body_lines)
+
+
+def load_preserved_source_entries(
+    combined_path: Path,
+    exclude_source_ids: Iterable[str],
+) -> list[PlaylistEntry]:
+    """Keep previously merged remote sources when rebuilding from jiotv_playlist."""
+    if not combined_path.exists():
+        return []
+    _, entries = load_combined_playlist(combined_path)
+    excluded = {source_id for source_id in exclude_source_ids}
+    preserved: list[PlaylistEntry] = []
+    for entry in entries:
+        if not has_source_marker(entry):
+            continue
+        if any(is_source_entry(entry, source_id) for source_id in excluded):
+            continue
+        preserved.append(entry)
+    return preserved
 
 
 def apply_colors_priority(
@@ -571,11 +601,29 @@ def load_combined_playlist(path: Path) -> tuple[list[str], list[PlaylistEntry]]:
     return parse_playlist(text)
 
 
-def remove_stale_source_channels(path: Path, source_id: str) -> int:
+def remove_stale_source_channels(
+    path: Path,
+    source_id: str,
+    repo_root: Path | None = None,
+) -> int:
     """Drop previously merged channels from this source after a failed fetch."""
+    removed = 0
+    if path.exists():
+        _, old_entries = load_combined_playlist(path)
+        removed = sum(1 for entry in old_entries if is_source_entry(entry, source_id))
+
+    if repo_root is not None and (repo_root / LOCAL_PLAYLIST_FILENAME).exists():
+        header, local_entries = load_local_playlist(repo_root)
+        preserved = load_preserved_source_entries(path, [source_id])
+        write_combined_playlist(
+            path, header, rank_entries(local_entries + preserved)
+        )
+        return removed
+
+    if not path.exists():
+        return 0
     header, entries = load_combined_playlist(path)
     cleaned = strip_source_entries(entries, source_id)
-    removed = len(entries) - len(cleaned)
     write_combined_playlist(path, header, cleaned)
     return removed
 
@@ -659,7 +707,9 @@ def _clear_stale_combined(
         )
         return
     try:
-        removed = remove_stale_source_channels(combined_path, source_id)
+        removed = remove_stale_source_channels(
+            combined_path, source_id, repo_root=repo_root
+        )
         print(
             f"Removed {removed} stale {source_id} channels from {combined_name}.",
             file=sys.stderr,
@@ -737,7 +787,16 @@ def run_update(
             incoming = [
                 entry for entry in unique_entries if should_keep_incoming(entry)
             ]
-            header, base_entries = load_combined_playlist(combined_path)
+            header, local_entries = load_local_playlist(repo_root)
+            exclude_ids = [source_id]
+            if prefer_colors:
+                exclude_ids.append(COLORS_SOURCE_ID)
+            preserved = load_preserved_source_entries(combined_path, exclude_ids)
+            base_entries = local_entries + preserved
+            print(
+                f"Combined base: {len(local_entries)} from {LOCAL_PLAYLIST_FILENAME}, "
+                f"{len(preserved)} preserved remote sources"
+            )
             merged = merge_combined_entries(
                 base_entries,
                 incoming,
