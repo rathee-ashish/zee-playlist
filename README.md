@@ -56,7 +56,7 @@ Configure the source URL in the GitHub UI:
 3. If the URL is not sensitive, add a **Variables** entry named `SOURCE_M3U_URL`.
 4. If the URL embeds credentials, add a **Secret** named `SOURCE_M3U_URL` instead.
 
-The workflow reads `vars.SOURCE_M3U_URL` / `vars.SOURCE_STAR_M3U_URL` first, then the matching secrets. If `SOURCE_M3U_URL` is unset, `scripts/update_zee.py` uses `DEFAULT_SOURCE_M3U_URL`. Change that constant (or the env var) when the upstream playlist URL moves. The job refetches every 4 hours and rewrites `zee.m3u`, `all-channels.m3u`, and `star_sports.m3u`.
+The workflow reads `vars.SOURCE_M3U_URL` / `vars.SOURCE_STAR_M3U_URL` first, then the matching secrets. If `SOURCE_M3U_URL` is unset, `scripts/update_zee.py` uses `DEFAULT_SOURCE_M3U_URL`. Change that constant (or the env var) when the upstream playlist URL moves. The job refetches about every 5 hours 45 minutes and rewrites `zee.m3u`, `all-channels.m3u`, and `star_sports.m3u`.
 
 `SOURCE_STAR_M3U_URL` defaults to [Star.json](https://sportlink-jtv.pages.dev/Star.json). Names, logos, URLs, and license fields are copied from that JSON. Playback `__hdnea__` cookies are copied from the published cookie feed used by [sportlive18/jio-tv-auto-update-playlist](https://github.com/sportlive18/jio-tv-auto-update-playlist) (`script/jtv.py`). The same token is copied onto the stream URL query plus `#EXTHTTP` / `stream_headers` so OTT Navigator Pro and TiviMate-style players both receive it. This project does **not** generate HMAC cookies. Only channels whose names match Star Sports are kept.
 
@@ -84,23 +84,22 @@ The file is only useful if the upstream source is authorized and the provider pe
 - The workflow periodically fetches the upstream playlist (see schedule below).
 - `zee.m3u` is replaced only after HTTP, M3U, Zee-match, and per-entry validation succeed.
 - On a failed Zee fetch, tagged Zee entries are stripped from `all-channels.m3u` so stale URLs are not kept.
-- GitHub Actions schedules are **not** guaranteed to run at the exact second; jobs can be delayed.
 - Upstream stream URLs often expire after about 6 hours. This repo does **not** extend or regenerate those URLs. It downloads a fresh playlist from `SOURCE_M3U_URL` on a schedule so `zee.m3u` is replaced before the previous copy goes stale.
 - GitHub Actions schedules are **not** guaranteed to run at the exact second; jobs can be delayed.
 
 ### Schedule limitation
 
-GitHub Actions cron is UTC and calendar-based. It **cannot** represent a true repeating 5 hour 30 minute interval.
-
-This workflow uses:
+GitHub Actions cron is UTC and calendar-based. It **cannot** represent a true repeating 5 hour 45 minute interval, so the workflow uses fixed UTC times spaced about that far apart:
 
 ```yaml
-cron: "0 */4 * * *"
+- cron: "0 0 * * *"
+- cron: "45 5 * * *"
+- cron: "30 11 * * *"
+- cron: "15 17 * * *"
+- cron: "0 23 * * *"
 ```
 
-That is every 4 hours (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC). Against a typical 6-hour source URL lifetime, that leaves about a 2-hour buffer, including some slack if GitHub starts the job late.
-
-A 6-hour cron (`0 */6 * * *`) is too close to expiry: a delayed workflow can publish after the links are already dead. Do not treat execution time as exact.
+That is about 00:00, 05:45, 11:30, 17:15, and 23:00 UTC (roughly every 5h45m). Against a typical 6-hour source URL lifetime, that leaves a small buffer. GitHub can still start the job late, so do not treat execution time as exact.
 
 ## Zee filtering rules
 
